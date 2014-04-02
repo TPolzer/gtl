@@ -6,6 +6,7 @@ module Language.GTL.Backend.All where
 import Language.GTL.Expression
 import Language.GTL.Backend
 import Language.GTL.Backend.Scade
+import Language.GTL.Backend.NuSMV
 import Language.GTL.Backend.None
 import Language.GTL.Types
 import Data.Map
@@ -62,4 +63,4 @@ initAllBackend :: String -- ^ The name of the backend
                   -> Opts.Options -- ^ Options for the whole program
                   -> [String] -- ^ The arguments with which to initialize the backend
                   -> IO (Maybe AllBackend)
-initAllBackend = firstM [tryInit Scade,tryInit None]
+initAllBackend = firstM [tryInit Scade,tryInit NuSMV,tryInit None]

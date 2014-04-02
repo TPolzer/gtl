@@ -15,9 +15,9 @@ Flag SMTExts
   Default: False
 
 Library
-  Build-Depends: base,array,containers,language-scade,language-promela,
+  Build-Depends: base,array,containers,language-scade,language-promela,language-nusmv,pretty,
     mtl,process,filepath,binary,bytestring,directory,extensible-exceptions,language-uppaal,fgl,hxt,pqueue,
-    syb,smtlib2,text,atto-lisp,time
+    syb,smtlib2,text,atto-lisp,time,monad-supply
   Hs-Source-Dirs: lib
   if flag(SMTExts)
     GHC-Options: -fwarn-unused-imports -DSMTExts
@@ -35,6 +35,7 @@ Library
     Language.GTL.ErrorRefiner
     Language.GTL.Backend
     Language.GTL.Backend.Scade
+    Language.GTL.Backend.NuSMV
     Language.GTL.Backend.None
     Language.GTL.Backend.All
     Language.GTL.Expression

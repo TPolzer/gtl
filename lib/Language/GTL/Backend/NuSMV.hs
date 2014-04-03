@@ -1,26 +1,36 @@
 {-# LANGUAGE TypeFamilies, RankNTypes #-}
 module Language.GTL.Backend.NuSMV (NuSMV(..)) where
 
-import Language.GTL.Backend
-import qualified Data.Map as M
-import Data.Map (Map)
-import Data.Functor
-import Data.List
-import Language.NuSMV.Parser
-import Language.NuSMV.Lexer
-import Language.NuSMV.Syntax as N
-import Language.GTL.Expression as G
-import Language.GTL.Translation
-import Language.GTL.LTL as L
-import Language.GTL.Types
-import Language.GTL.DFA
-import Language.NuSMV.Misc
-import Language.NuSMV.Pretty
-import Data.Maybe
-import Data.Fix
-import Text.PrettyPrint
-import Control.Monad.Supply
 import Control.Monad.State
+import Control.Monad.Supply
+import Data.Fix
+import Data.Functor
+import Data.Int
+import Data.List
+import Data.Map (Map)
+import qualified Data.Map as M
+import Data.Maybe
+import Language.GTL.Backend
+import Language.GTL.DFA
+import Language.GTL.Expression as G
+import Language.GTL.LTL as L
+import Language.GTL.Parser
+import Language.GTL.Parser.Monad
+import Language.GTL.Parser.Syntax
+import Language.GTL.Translation
+import Language.GTL.Types
+import Language.NuSMV.Lexer
+import Language.NuSMV.Misc
+import Language.NuSMV.Parser
+import Language.NuSMV.Pretty
+import Language.NuSMV.Syntax as N
+import Misc.ProgramOptions
+import System.Directory
+import System.Exit
+import System.IO
+import System.Process
+import Text.ParserCombinators.ReadP as ReadP
+import Text.PrettyPrint
 
 data NuSMV = NuSMV deriving (Show)
 
@@ -28,7 +38,7 @@ instance GTLBackend NuSMV where
   data GTLBackendModel NuSMV = NuSMVData {
     nuSMVFileName :: String,
     nuSMVName :: String
-  }
+  } deriving (Show)
   backendName NuSMV = "NuSMV"
   initBackend NuSMV opts [file,name] = do
     return NuSMVData { nuSMVFileName = file, nuSMVName = name }
@@ -36,6 +46,12 @@ instance GTLBackend NuSMV where
   cInterface NuSMV = error "NuSMV is not C-compatible!"
   backendGetAliases _ _ = M.empty
   backendVerify NuSMV nuSMVData cy exprs locals init constVars opts gtlName = do
+    -- THIS IS AN UGLY HACK
+    Right decls <- runGTLParser gtl <$> (readFile $ gtlFile opts)
+    let isMod (Model m) = modelName m == nuSMVName nuSMVData
+        isMod _ = False
+        inputs = modelInputs $ (\(Model m) -> m) $ head $ filter isMod decls
+    --
     let file = nuSMVFileName nuSMVData
         component = nuSMVName nuSMVData
     impl <- do
@@ -56,22 +72,62 @@ instance GTLBackend NuSMV where
             )
           return (l++dfas)
         implContracted = impl {moduleBody = moduleBody impl ++ nusmvContracts}
-    writeFile "test.smv" $ render $ prettyProgram [
-        implContracted,
-        Module {
-            moduleName = "main",
-            moduleParameter = [],
-            moduleBody = [
-                VarDeclaration [
-                    ("in1",SimpleType TypeBool),
-                    ("client",ModuleType "client" [IdExpr $ ComplexId Nothing [Left "in1"]])
-                ]
-            ]
-        }
-      ]
-    return Nothing
+        (ids,types) = unzip $ M.toList inputs
+        inids = map (\x -> "__in" ++ show x) [1..length ids]
+        intypes = map type2smv types
+        id2expr = IdExpr . ComplexId Nothing . return . Left
+        testProg = (++"\n") $ render $ prettyProgram [
+          implContracted,
+          Module {
+              moduleName = "main",
+              moduleParameter = [],
+              moduleBody = [
+                  VarDeclaration $
+                  zip inids intypes ++ 
+                  [
+                      (moduleName impl ,ModuleType (moduleName impl) $ map id2expr inids)
+                  ]
+              ]
+          }]
+    (path, h) <- openTempFile "." "nusmvBackend.smv"
+    hPutStr h testProg
+    hClose h
+    (hin,hout,herr,pid) <- runInteractiveCommand $ "NuSMV " ++ path
+    output <- lines <$> hGetContents hout
+    mapM hClose [hin,herr]
+    let results = filter (not . null) $ map (readP_to_S parseNuSMVLine) output
+    exitCode <- waitForProcess pid
+    removeFile path
+    return $! if exitCode == ExitSuccess then Just $ not $ [(" is false","")] `elem` results else Nothing
 
 type ModuleProd a = StateT [ModuleElement] (Supply Int) a
+
+parseNuSMVLine :: ReadP String 
+parseNuSMVLine = do
+    string "--"
+    many ReadP.get
+    res <- string " is true" +++ string " is false"
+    eof
+    return res
+
+type2smv :: UnResolvedType -> TypeSpecifier
+type2smv x = case unfix x of
+  UnResolvedType' (Left s) -> error $ "unresolved type " ++ s
+  UnResolvedType' (Right t) -> SimpleType $ type2smv' t
+    where
+      type2smv' x = case x of
+        GTLInt -> TypeRange
+          (ConstExpr $ ConstInteger $ fromIntegral (minBound :: Int64))
+          (ConstExpr $ ConstInteger $ fromIntegral (maxBound :: Int64))
+        GTLByte -> TypeWord Nothing $ ConstExpr $ ConstInteger 8
+        GTLBool -> TypeBool
+        GTLFloat -> error "nusmv does not support floats"
+        GTLEnum l -> TypeEnum $ map Left l
+        GTLArray s t -> TypeArray (ConstExpr $ ConstInteger 0) (ConstExpr $ ConstInteger (s-1)) $
+          (\(SimpleType t)->t) $ type2smv t
+        GTLTuple _ -> error "nusmv does not support tuples"
+        GTLNamed _ _ -> error "type aliases not implemented"
+
 
 ltl2smv :: LTL (TypedExpr String) -> Supply Int [ModuleElement]
 ltl2smv = unwrapDef . convertL

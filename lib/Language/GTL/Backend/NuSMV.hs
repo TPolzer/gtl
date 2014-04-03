@@ -154,7 +154,7 @@ dfa2smv dfa = uncurry (++) <$> (flip runStateT [] $ do
       trans = unTotal $ dfaTransitions dfa :: Map Integer [([TypedExpr String],Integer)]
   table <- concat <$> forM (M.toList trans) (\(from,tos) ->
     forM tos (\(guard,to) -> do
-        exprs <- foldl (BinExpr OpAnd) (ConstExpr $ ConstBool True) <$> mapM expr2smv guard
+        exprs <- foldl (BinExpr OpAnd) (BinExpr OpEq (IdExpr i_state) (ConstExpr $ ConstId $ n_func from)) <$> mapM expr2smv guard
         return (exprs, ConstExpr $ ConstId $ n_func to)
       )
     )

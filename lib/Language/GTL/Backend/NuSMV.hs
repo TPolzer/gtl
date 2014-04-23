@@ -1,6 +1,8 @@
 {-# LANGUAGE TypeFamilies, RankNTypes #-}
 module Language.GTL.Backend.NuSMV (NuSMV(..)) where
 
+import Control.Arrow
+import Control.Concurrent
 import Control.Monad.State
 import Control.Monad.Supply
 import Data.Fix
@@ -10,6 +12,7 @@ import Data.List
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
+import qualified Data.Set as S
 import Language.GTL.Backend
 import Language.GTL.DFA
 import Language.GTL.Expression as G
@@ -29,7 +32,7 @@ import System.Directory
 import System.Exit
 import System.IO
 import System.Process
-import Text.ParserCombinators.ReadP as ReadP
+import Text.ParserCombinators.ReadP as P
 import Text.PrettyPrint
 
 data NuSMV = NuSMV deriving (Show)
@@ -51,6 +54,16 @@ instance GTLBackend NuSMV where
     let isMod (Model m) = modelName m == nuSMVName nuSMVData
         isMod _ = False
         inputs = modelInputs $ (\(Model m) -> m) $ head $ filter isMod decls
+        outputs = modelOutputs $ (\(Model m) -> m) $ head $ filter isMod decls
+        locals = modelLocals $ (\(Model m) -> m) $ head $ filter isMod decls
+        vars = M.unions [inputs, outputs, locals]
+        enums = S.fromList $ map enum2str $ filter isEnum $ concat $ map subtypes $ M.elems vars
+        isEnum :: UnResolvedType -> Bool
+        isEnum (Fix (UnResolvedType' (Right (GTLEnum _)))) = True
+        isEnum _ = False
+        enum2str (Fix (UnResolvedType' (Right (GTLEnum s)))) = s
+        subtypes (Fix (UnResolvedType' (Right (GTLArray _ t)))) = subtypes t
+        subtypes x = return x
     --
     let file = nuSMVFileName nuSMVData
         component = nuSMVName nuSMVData
@@ -63,14 +76,15 @@ instance GTLBackend NuSMV where
         isLTL _ = True
         (ltls,automata) = partition isLTL contracts
         nusmvContracts = concat $ flip evalSupply [0..] $ do
-          l <- sequence $ map ltl2smv ltls
+          let l = map ltl2smv ltls
+          let i = map (ltlinit . second (constantToExpr enums . fromJust)) $ M.toList init
           dfas <- forM automata (\(LTLAutomaton a) -> do
             let dfa = case determinizeBA a of
                   Just d -> d
                   _ -> error "Automata contracts with non-final states are not allowed"
             dfa2smv $ renameDFAStates $ minimizeDFA $ dfa
             )
-          return (l++dfas)
+          return (l:i:dfas)
         implContracted = impl {moduleBody = moduleBody impl ++ nusmvContracts}
         (ids,types) = unzip $ M.toList inputs
         inids = map (\x -> "__in" ++ show x) [1..length ids]
@@ -92,23 +106,58 @@ instance GTLBackend NuSMV where
     (path, h) <- openTempFile "." "nusmvBackend.smv"
     hPutStr h testProg
     hClose h
-    (hin,hout,herr,pid) <- runInteractiveCommand $ "NuSMV " ++ path
-    output <- lines <$> hGetContents hout
-    mapM hClose [hin,herr]
-    let results = filter (not . null) $ map (readP_to_S parseNuSMVLine) output
-    exitCode <- waitForProcess pid
+    (hin,hout,herr,pid) <- runInteractiveCommand $ "NuSMV -ctt " ++ path
+    output <- hGetContents hout
+    forkIO $ hGetContents herr >>= hPutStr stderr
+    --errout <- hGetContents herr
+    {-when (errout /= "") $ do
+        putStrLn "NuSMV produced the following error output while running:"
+        putStr errout-}
+    hClose hin
+--    hPutStr stderr output
+    let results = (readP_to_S parseNuSMV) output    
+    r <- case results of
+        [] -> putStr ("could not parse NuSMV output:\n" ++ output) >> return Nothing
+        (((valid,err),""):_) -> do
+            when (not valid) $ putStrLn err
+            exitCode <- waitForProcess pid
+            return $ if exitCode == ExitSuccess then Just valid else Nothing
     removeFile path
-    return $! if exitCode == ExitSuccess then Just $ not $ [(" is false","")] `elem` results else Nothing
+    return r
 
 type ModuleProd a = StateT [ModuleElement] (Supply Int) a
 
-parseNuSMVLine :: ReadP String 
-parseNuSMVLine = do
-    string "--"
-    many ReadP.get
-    res <- string " is true" +++ string " is false"
+parseNuSMV :: ReadP (Bool,String)
+parseNuSMV = do
+    let ctt = (count 58 $ P.char '#') >> P.char '\n'
+        skip = void P.get
+    manyTill skip ctt
+    string "The transition relation is "
+    t <- string "total:" <++ string "not total. "
+    let total = t == "total:"
+    terr <- manyTill P.get ctt
+    specs <- many $ do
+        string "-- specification "
+        spec <- manyTill P.get $ string "IN "
+        manyTill skip $ string "is "
+        v <- string "true\n" <++ string "false\n"
+        let valid = v == "true\n"
+        err <- if valid then return [] else do
+            string "-- as demonstrated by the following execution sequence\n"
+            many $ do
+                line <- manyTill P.get $ P.char '\n'
+                if "-- specification" `isPrefixOf` line then pfail else return ()
+                return line
+        return $ if valid then "" else
+            "Specification " ++ spec ++ " is false. Counterexample:\n" ++ (unlines err)
+    let res = total && all (=="") specs
+    let err = (if not total then ["The transition relation is not total:\n" ++ terr] else []) ++ filter (/="") specs
     eof
-    return res
+    return (res, concat err)
+
+ltlinit :: (String, TypedExpr String) -> ModuleElement
+ltlinit (id, expr) = LTLSpec $ expr2smv $ Fix $ Typed (Fix GTLBool) $
+    BinRelExpr BinEq (Fix $ Typed (getType $ unfix expr) $ Var id 0 Input) expr
 
 type2smv :: UnResolvedType -> TypeSpecifier
 type2smv x = case unfix x of
@@ -129,23 +178,17 @@ type2smv x = case unfix x of
         GTLNamed _ _ -> error "type aliases not implemented"
 
 
-ltl2smv :: LTL (TypedExpr String) -> Supply Int [ModuleElement]
-ltl2smv = unwrapDef . convertL
+ltl2smv :: LTL (TypedExpr String) -> ModuleElement
+ltl2smv = LTLSpec . convertL
     where
-        convertL (Ground b) = return $ ConstExpr $ ConstBool b
+        convertL (Ground b) = ConstExpr $ ConstBool b
         convertL (Atom a) = expr2smv a
-        convertL (Bin op a b) = do
-            ca <- convertL a
-            cb <- convertL b
-            return $ BinExpr (binOp2smv op) ca cb
-        convertL (Un op a) = UnExpr (convertOu op) <$> convertL a
+        convertL (Bin op a b) = BinExpr (binOp2smv op) (convertL a) (convertL b)
+        convertL (Un op a) = UnExpr (convertOu op) $ convertL a
         convertOu = fromJust . flip lookup [(L.Not,OpNot),(L.Next,LTLX)]
-        unwrapDef act = do
-            (ltl,defs) <- runStateT act []
-            return $ LTLSpec ltl : defs
 
 dfa2smv :: DFA [TypedExpr String] Integer -> Supply Int [ModuleElement]
-dfa2smv dfa = uncurry (++) <$> (flip runStateT [] $ do
+dfa2smv dfa = do
   cid <- supply
   let n_state = "__contract" ++ show cid ++ "_state"
       i_state = ComplexId { idBase = Nothing, idNavigation = [Left n_state] }
@@ -153,8 +196,9 @@ dfa2smv dfa = uncurry (++) <$> (flip runStateT [] $ do
       n_func x = n_state ++ "_"++show x
       trans = unTotal $ dfaTransitions dfa :: Map Integer [([TypedExpr String],Integer)]
   table <- concat <$> forM (M.toList trans) (\(from,tos) ->
-    forM tos (\(guard,to) -> do
-        exprs <- foldl (BinExpr OpAnd) (BinExpr OpEq (IdExpr i_state) (ConstExpr $ ConstId $ n_func from)) <$> mapM expr2smv guard
+    forM tos (\(guard,to) ->
+        let exprs = foldl (BinExpr OpAnd) (BinExpr OpEq (IdExpr i_state) (ConstExpr $ ConstId $ n_func from)) $
+                map expr2smv guard in
         return (exprs, ConstExpr $ ConstId $ n_func to)
       )
     )
@@ -169,39 +213,42 @@ dfa2smv dfa = uncurry (++) <$> (flip runStateT [] $ do
         CaseExpr $ table ++ [(ConstExpr $ ConstBool True, ConstExpr $ ConstId n_fail)])
       ],
     LTLSpec $ UnExpr LTLG $ UnExpr OpNot $ BinExpr OpEq (IdExpr i_state) $ ConstExpr $ ConstId n_fail
-    ])
+    ]
 
-expr2smv :: TypedExpr String -> ModuleProd BasicExpr
+expr2smv :: TypedExpr String -> BasicExpr
 expr2smv expr = case getValue $ unfix expr of
-    Var name _ Input -> return $ ConstExpr $ ConstId name
-    Var name _ _ -> return $ IdExpr $ ComplexId {idBase = Nothing, idNavigation = [Left name]}
-    Value v -> ConstExpr <$> case v of
-        GTLIntVal i -> return $ ConstInteger i
-        GTLByteVal b -> return $ 
-            ConstWord $ WordConstant {wcSigned = Just False, wcBits = Just 8, wcValue = toInteger b}
-        GTLBoolVal b -> return $ ConstBool b
-        GTLFloatVal _ -> error "floats are not handled by NuSMV"
-        GTLEnumVal s -> return $ ConstId s
-        GTLArrayVal l -> do 
-            num <- lift $ supply
-            let ident = "__array_define_" ++ show num
-            content <- mapM expr2smv l
-            modify ((ArrayDefine ident (ArrayContents content)):)
-            return $ ConstId ident
-        GTLTupleVal _ -> error "NuSMV does not handle tuples"
+    Var name _ Input -> ConstExpr $ ConstId name
+    Var name _ _ -> IdExpr $ ComplexId {idBase = Nothing, idNavigation = [Left name]}
     BinBoolExpr op a b -> binExpr2smv op a b
-    BinRelExpr op a b -> binExpr2smv op a b
+    BinRelExpr op a b -> case getType $ unfix a of
+        Fix (GTLArray l te) -> case op of
+            BinNEq -> UnExpr OpNot $ expr2smv $ Fix $ Typed t $ BinRelExpr BinEq a b
+            BinEq -> foldl (BinExpr OpAnd) (ConstExpr $ ConstBool True) $ map (expr2smv . Fix . Typed t) $
+                zipWith (BinRelExpr BinEq) (idx a) (idx b)
+                where idx x = zipWith ((Fix.) . (Typed t .) . IndexExpr) (repeat x) [0..l-1]
+        _ -> binExpr2smv op a b
     BinIntExpr op a b -> binExpr2smv op a b
-    UnBoolExpr G.Not a -> UnExpr OpNot <$> expr2smv a
-    IndexExpr a i -> flip IdxExpr (ConstExpr $ ConstInteger i) <$> expr2smv a
+    UnBoolExpr G.Not a -> UnExpr OpNot $ expr2smv a
+    IndexExpr (Fix (Typed _ (Value (GTLArrayVal a)))) i -> expr2smv $ a!!(fromInteger i)
+    IndexExpr a i -> flip IdxExpr (ConstExpr $ ConstInteger i) $ expr2smv a
+    Value v -> ConstExpr $ case v of
+        GTLIntVal i -> ConstInteger i
+        GTLByteVal b -> 
+            ConstWord $ WordConstant {wcSigned = Just False, wcBits = Just 8, wcValue = toInteger b}
+        GTLBoolVal b -> ConstBool b
+        GTLFloatVal _ -> error "The NuSMV backend does not support floats."
+        GTLEnumVal s -> ConstId s
+        GTLArrayVal l -> error "Arrays can only be indexed or compared for equality."
+        GTLTupleVal _ -> error "The NuSMV backend does not support tuples"
     x -> error $ "expr not implemented in expr2smv: " ++ show2 x
     where
+        t = getType $ unfix $ expr
         binExpr2smv :: forall o . (BOp o, Eq o) =>
-            o -> TypedExpr String -> TypedExpr String -> ModuleProd BasicExpr
+            o -> TypedExpr String -> TypedExpr String -> BasicExpr
         binExpr2smv op a b = do
-            ea <- expr2smv a
-            eb <- expr2smv b
-            return $ BinExpr (binOp2smv op) ea eb
+            let ea = expr2smv a
+                eb = expr2smv b in
+                    BinExpr (binOp2smv op) ea eb
 
 class BOp o where
     binOp2smv :: Eq o => o -> N.BinOp

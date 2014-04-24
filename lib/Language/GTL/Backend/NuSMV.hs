@@ -35,6 +35,8 @@ import System.Process
 import Text.ParserCombinators.ReadP as P
 import Text.PrettyPrint
 
+import Debug.Trace
+
 data NuSMV = NuSMV deriving (Show)
 
 instance GTLBackend NuSMV where
@@ -48,7 +50,9 @@ instance GTLBackend NuSMV where
   cInterface NuSMV = error "NuSMV is not C-compatible!"
   backendGetAliases _ _ = M.empty
   backendVerify NuSMV nuSMVData cy exprs locals init constVars opts gtlName = do
-    -- THIS IS AN UGLY HACK
+
+    -- The gtl file is parsed a second time here, because we do not get type
+    -- information for local/input/output variables from the caller.
     Right decls <- runGTLParser gtl <$> readFile (gtlFile opts)
     let isMod (Model m) = modelName m == nuSMVName nuSMVData
         isMod _ = False
@@ -63,20 +67,27 @@ instance GTLBackend NuSMV where
         enum2str (Fix (UnResolvedType' (Right (GTLEnum s)))) = s
         subtypes (Fix (UnResolvedType' (Right (GTLArray _ t)))) = subtypes t
         subtypes x = return x
-    --
+
+    -- parse the implementation
     let file = nuSMVFileName nuSMVData
         component = nuSMVName nuSMVData
-    impl <- do
+    (impl,depends) <- do
         content <- nusmv . alexScanTokens <$> readFile file
-        let Just impl = find ( (==component) . moduleName ) content
-        return impl
+        let Just impl = findModule component
+            findModule m = find ( (==m) . moduleName ) content
+            gatherModules = S.toList . S.unions . map getDeps . catMaybes . map findModule
+            depList = iterate gatherModules [component]
+            Just (needed,_) = find (uncurry (==)) $ zip depList $ tail depList
+            deps = catMaybes $ map findModule $ delete component needed
+        return (impl, deps)
+
     let contracts = gtlToLTL (Just cy) <$> exprs
         isLTL (LTLAutomaton _) = False
         isLTL _ = True
         (ltls,automata) = partition isLTL contracts
         nusmvContracts = concat $ flip evalSupply [0..] $ do
           let l = map ltl2smv ltls
-          let i = map (ltlinit . second (constantToExpr enums . fromJust)) $ M.toList init
+              i = map (ltlinit . second (constantToExpr enums . fromJust)) $ M.toList init
           dfas <- forM automata (\(LTLAutomaton a) -> do
             let dfa = case determinizeBA a of
                   Just d -> d
@@ -89,7 +100,7 @@ instance GTLBackend NuSMV where
         inids = map (\x -> "__in" ++ show x) [1..length ids]
         intypes = map type2smv types
         id2expr = IdExpr . ComplexId Nothing . return . Left
-        testProg = (++"\n") $ render $ prettyProgram [
+        testProg = (++"\n") $ render $ prettyProgram $ [
           implContracted,
           Module {
               moduleName = "main",
@@ -101,7 +112,7 @@ instance GTLBackend NuSMV where
                       (moduleName impl ,ModuleType (moduleName impl) $ map id2expr inids)
                   ]
               ]
-          }]
+          }] ++ depends
     (path, h) <- openTempFile "." "nusmvBackend.smv"
     hPutStr h testProg
     hClose h
@@ -121,7 +132,7 @@ instance GTLBackend NuSMV where
             unless valid $ putStrLn err
             exitCode <- waitForProcess pid
             return $ if exitCode == ExitSuccess then Just valid else Nothing
-    removeFile path
+--    removeFile path
     return r
 
 type ModuleProd a = StateT [ModuleElement] (Supply Int) a
@@ -153,6 +164,14 @@ parseNuSMV = do
     let err = ["The transition relation is not total:\n" ++ terr | not total] ++ filter (/="") specs
     eof
     return (res, concat err)
+
+getDeps :: Module -> S.Set String
+getDeps m = moduleName m `S.insert` S.unions (map getVarDeps $ moduleBody m)
+    where
+    getVarDeps (VarDeclaration ds) = S.unions $ map (getTypeDeps . snd) ds
+    getVarDeps _ = S.empty
+    getTypeDeps (ModuleType s _) = S.singleton s
+    getTypeDeps _ = S.empty
 
 ltlinit :: (String, TypedExpr String) -> ModuleElement
 ltlinit (id, expr) = LTLSpec $ expr2smv $ Fix $ Typed (Fix GTLBool) $

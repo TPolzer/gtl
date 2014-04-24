@@ -43,21 +43,20 @@ instance GTLBackend NuSMV where
     nuSMVName :: String
   } deriving (Show)
   backendName NuSMV = "NuSMV"
-  initBackend NuSMV opts [file,name] = do
-    return NuSMVData { nuSMVFileName = file, nuSMVName = name }
+  initBackend NuSMV opts [file,name] = return NuSMVData { nuSMVFileName = file, nuSMVName = name }
   typeCheckInterface NuSMV nuSMVData modelInterface = return modelInterface
   cInterface NuSMV = error "NuSMV is not C-compatible!"
   backendGetAliases _ _ = M.empty
   backendVerify NuSMV nuSMVData cy exprs locals init constVars opts gtlName = do
     -- THIS IS AN UGLY HACK
-    Right decls <- runGTLParser gtl <$> (readFile $ gtlFile opts)
+    Right decls <- runGTLParser gtl <$> readFile (gtlFile opts)
     let isMod (Model m) = modelName m == nuSMVName nuSMVData
         isMod _ = False
         inputs = modelInputs $ (\(Model m) -> m) $ head $ filter isMod decls
         outputs = modelOutputs $ (\(Model m) -> m) $ head $ filter isMod decls
         locals = modelLocals $ (\(Model m) -> m) $ head $ filter isMod decls
         vars = M.unions [inputs, outputs, locals]
-        enums = S.fromList $ map enum2str $ filter isEnum $ concat $ map subtypes $ M.elems vars
+        enums = S.fromList $ map enum2str $ filter isEnum $ concatMap subtypes $ M.elems vars
         isEnum :: UnResolvedType -> Bool
         isEnum (Fix (UnResolvedType' (Right (GTLEnum _)))) = True
         isEnum _ = False
@@ -82,7 +81,7 @@ instance GTLBackend NuSMV where
             let dfa = case determinizeBA a of
                   Just d -> d
                   _ -> error "Automata contracts with non-final states are not allowed"
-            dfa2smv $ renameDFAStates $ minimizeDFA $ dfa
+            dfa2smv $ renameDFAStates $ minimizeDFA dfa
             )
           return (l:i:dfas)
         implContracted = impl {moduleBody = moduleBody impl ++ nusmvContracts}
@@ -115,11 +114,11 @@ instance GTLBackend NuSMV where
         putStr errout-}
     hClose hin
 --    hPutStr stderr output
-    let results = (readP_to_S parseNuSMV) output    
+    let results = readP_to_S parseNuSMV output    
     r <- case results of
         [] -> putStr ("could not parse NuSMV output:\n" ++ output) >> return Nothing
         (((valid,err),""):_) -> do
-            when (not valid) $ putStrLn err
+            unless valid $ putStrLn err
             exitCode <- waitForProcess pid
             return $ if exitCode == ExitSuccess then Just valid else Nothing
     removeFile path
@@ -129,7 +128,7 @@ type ModuleProd a = StateT [ModuleElement] (Supply Int) a
 
 parseNuSMV :: ReadP (Bool,String)
 parseNuSMV = do
-    let ctt = (count 58 $ P.char '#') >> P.char '\n'
+    let ctt = count 58 (P.char '#') >> P.char '\n'
         skip = void P.get
     manyTill skip ctt
     string "The transition relation is "
@@ -146,12 +145,12 @@ parseNuSMV = do
             string "-- as demonstrated by the following execution sequence\n"
             many $ do
                 line <- manyTill P.get $ P.char '\n'
-                if "-- specification" `isPrefixOf` line then pfail else return ()
+                when ("-- specification" `isPrefixOf` line) pfail
                 return line
         return $ if valid then "" else
-            "Specification " ++ spec ++ " is false. Counterexample:\n" ++ (unlines err)
+            "Specification " ++ spec ++ " is false. Counterexample:\n" ++ unlines err
     let res = total && all (=="") specs
-    let err = (if not total then ["The transition relation is not total:\n" ++ terr] else []) ++ filter (/="") specs
+    let err = ["The transition relation is not total:\n" ++ terr | not total] ++ filter (/="") specs
     eof
     return (res, concat err)
 
@@ -218,7 +217,7 @@ dfa2smv dfa = do
 expr2smv :: TypedExpr String -> BasicExpr
 expr2smv expr = case getValue $ unfix expr of
     Var name _ Input -> ConstExpr $ ConstId name
-    Var name _ _ -> IdExpr $ ComplexId {idBase = Nothing, idNavigation = [Left name]}
+    Var name _ _ -> IdExpr ComplexId {idBase = Nothing, idNavigation = [Left name]}
     BinBoolExpr op a b -> binExpr2smv op a b
     BinRelExpr op a b -> case getType $ unfix a of
         Fix (GTLArray l te) -> case op of
@@ -229,12 +228,12 @@ expr2smv expr = case getValue $ unfix expr of
         _ -> binExpr2smv op a b
     BinIntExpr op a b -> binExpr2smv op a b
     UnBoolExpr G.Not a -> UnExpr OpNot $ expr2smv a
-    IndexExpr (Fix (Typed _ (Value (GTLArrayVal a)))) i -> expr2smv $ a!!(fromInteger i)
+    IndexExpr (Fix (Typed _ (Value (GTLArrayVal a)))) i -> expr2smv $ a !! fromInteger i
     IndexExpr a i -> flip IdxExpr (ConstExpr $ ConstInteger i) $ expr2smv a
     Value v -> ConstExpr $ case v of
         GTLIntVal i -> ConstInteger i
         GTLByteVal b -> 
-            ConstWord $ WordConstant {wcSigned = Just False, wcBits = Just 8, wcValue = toInteger b}
+            ConstWord WordConstant {wcSigned = Just False, wcBits = Just 8, wcValue = toInteger b}
         GTLBoolVal b -> ConstBool b
         GTLFloatVal _ -> error "The NuSMV backend does not support floats."
         GTLEnumVal s -> ConstId s
@@ -242,12 +241,10 @@ expr2smv expr = case getValue $ unfix expr of
         GTLTupleVal _ -> error "The NuSMV backend does not support tuples"
     x -> error $ "expr not implemented in expr2smv: " ++ show2 x
     where
-        t = getType $ unfix $ expr
+        t = getType $ unfix expr
         binExpr2smv :: forall o . (BOp o, Eq o) =>
             o -> TypedExpr String -> TypedExpr String -> BasicExpr
-        binExpr2smv op a b = do
-            let ea = expr2smv a
-                eb = expr2smv b in
+        binExpr2smv op a b = let [ea,eb] = map expr2smv [a,b] in
                     BinExpr (binOp2smv op) ea eb
 
 class BOp o where

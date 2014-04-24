@@ -132,7 +132,7 @@ instance GTLBackend NuSMV where
             unless valid $ putStrLn err
             exitCode <- waitForProcess pid
             return $ if exitCode == ExitSuccess then Just valid else Nothing
---    removeFile path
+    removeFile path
     return r
 
 type ModuleProd a = StateT [ModuleElement] (Supply Int) a

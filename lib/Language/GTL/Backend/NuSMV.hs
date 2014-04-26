@@ -74,6 +74,8 @@ instance GTLBackend NuSMV where
         let Just impl = findModule component
             findModule m = find ( (==m) . moduleName ) content
             gatherModules = S.toList . S.unions . map getDeps . mapMaybe findModule
+
+            --fixpoint iteration of module dependencies
             depList = iterate gatherModules [component]
             Just (needed,_) = find (uncurry (==)) $ zip depList $ tail depList
             deps = mapMaybe findModule $ delete component needed
@@ -85,6 +87,7 @@ instance GTLBackend NuSMV where
         (ltls,automata) = partition isLTL contracts
         nusmvContracts = concat $ flip evalSupply [0..] $ do
           let l = map ltl2smv ltls
+              -- map initial values to ltl constraints
               i = map (ltlinit . second (constantToExpr enums . fromJust)) $ M.toList init
           dfas <- forM automata (\(LTLAutomaton a) -> do
             let dfa = case determinizeBA a of
@@ -158,6 +161,7 @@ parseNuSMV = do
     eof
     return (res, concat err)
 
+-- | returns all directly referenced ModuleType names in the input module
 getDeps :: Module -> S.Set String
 getDeps m = moduleName m `S.insert` S.unions (map getVarDeps $ moduleBody m)
     where
@@ -166,6 +170,7 @@ getDeps m = moduleName m `S.insert` S.unions (map getVarDeps $ moduleBody m)
     getTypeDeps (ModuleType s _) = S.singleton s
     getTypeDeps _ = S.empty
 
+-- | 'ltlinit (s, v)' = LTLSpec s = v
 ltlinit :: (String, TypedExpr String) -> ModuleElement
 ltlinit (id, expr) = LTLSpec $ expr2smv $ Fix $ Typed (Fix GTLBool) $
     BinRelExpr BinEq (Fix $ Typed (getType $ unfix expr) $ Var id 0 Input) expr
@@ -198,6 +203,9 @@ ltl2smv = LTLSpec . convertL
         convertL (Un op a) = UnExpr (convertOu op) $ convertL a
         convertOu = fromJust . flip lookup [(L.Not,OpNot),(L.Next,LTLX)]
 
+-- | Translates a dfa to a nusmv implementation with an added fail-state if no
+-- transition can be taken and specifies in LTL that the fail-state is never
+-- reached. The supply is used for naming variables uniquely.
 dfa2smv :: DFA [TypedExpr String] Integer -> Supply Int [ModuleElement]
 dfa2smv dfa = do
   cid <- supply
@@ -259,6 +267,7 @@ expr2smv expr = case getValue $ unfix expr of
         binExpr2smv op a b = let [ea,eb] = map expr2smv [a,b] in
                     BinExpr (binOp2smv op) ea eb
 
+-- | type class to unify the different binary operators of gtl
 class BOp o where
     binOp2smv :: Eq o => o -> N.BinOp
     binOp2smv = fromJust . flip lookup opLlist

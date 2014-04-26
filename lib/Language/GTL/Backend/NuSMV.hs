@@ -35,8 +35,6 @@ import System.Process
 import Text.ParserCombinators.ReadP as P
 import Text.PrettyPrint
 
-import Debug.Trace
-
 data NuSMV = NuSMV deriving (Show)
 
 instance GTLBackend NuSMV where
@@ -75,10 +73,10 @@ instance GTLBackend NuSMV where
         content <- nusmv . alexScanTokens <$> readFile file
         let Just impl = findModule component
             findModule m = find ( (==m) . moduleName ) content
-            gatherModules = S.toList . S.unions . map getDeps . catMaybes . map findModule
+            gatherModules = S.toList . S.unions . map getDeps . mapMaybe findModule
             depList = iterate gatherModules [component]
             Just (needed,_) = find (uncurry (==)) $ zip depList $ tail depList
-            deps = catMaybes $ map findModule $ delete component needed
+            deps = mapMaybe findModule $ delete component needed
         return (impl, deps)
 
     let contracts = gtlToLTL (Just cy) <$> exprs
@@ -119,12 +117,7 @@ instance GTLBackend NuSMV where
     (hin,hout,herr,pid) <- runInteractiveCommand $ "NuSMV -ctt " ++ path
     output <- hGetContents hout
     forkIO $ hGetContents herr >>= hPutStr stderr
-    --errout <- hGetContents herr
-    {-when (errout /= "") $ do
-        putStrLn "NuSMV produced the following error output while running:"
-        putStr errout-}
     hClose hin
---    hPutStr stderr output
     let results = readP_to_S parseNuSMV output    
     r <- case results of
         [] -> putStr ("could not parse NuSMV output:\n" ++ output) >> return Nothing
@@ -275,8 +268,7 @@ instance BOp BoolOp where
     opLlist = [(G.And,OpAnd),(G.Or,OpOr)]
 instance BOp Relation where
     opLlist = [(BinLT,OpLT),(BinLTEq,OpLTE),(BinGT,OpGT),(BinGTEq,OpGTE),(BinEq,OpEq),(BinNEq,OpNeq),(BinAssign,error "assignment may not occur in this context")]
--- TODO implement mult, div in language-nusmv
 instance BOp IntOp where
-    opLlist = [(G.OpPlus,N.OpPlus),(G.OpMinus,N.OpMinus),(G.OpMult,error "mult not implemented"),(G.OpDiv,error "div not implemented")]
+    opLlist = [(G.OpPlus,N.OpPlus),(G.OpMinus,N.OpMinus),(G.OpMult,N.OpMult),(G.OpDiv,N.OpDiv)]
 instance BOp L.BinOp where
     opLlist = [(L.And,OpAnd),(L.Or,OpOr),(L.Until,LTLU),(L.UntilOp,LTLV)]

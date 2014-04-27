@@ -7,7 +7,6 @@ import Control.Monad.State
 import Control.Monad.Supply
 import Data.Fix
 import Data.Functor
-import Data.Int
 import Data.List
 import Data.Map (Map)
 import qualified Data.Map as M
@@ -181,10 +180,8 @@ type2smv x = case unfix x of
   UnResolvedType' (Right t) -> SimpleType $ type2smv' t
     where
       type2smv' x = case x of
-        GTLInt -> TypeRange
-          (ConstExpr $ ConstInteger $ fromIntegral (minBound :: Int64))
-          (ConstExpr $ ConstInteger $ fromIntegral (maxBound :: Int64))
-        GTLByte -> TypeWord Nothing $ ConstExpr $ ConstInteger 8
+        GTLInt -> TypeWord (Just True) $ ConstExpr $ ConstInteger 64
+        GTLByte -> TypeWord (Just False) $ ConstExpr $ ConstInteger 8
         GTLBool -> TypeBool
         GTLFloat -> error "nusmv does not support floats"
         GTLEnum l -> TypeEnum $ map Left l
@@ -251,7 +248,8 @@ expr2smv expr = case getValue $ unfix expr of
     IndexExpr (Fix (Typed _ (Value (GTLArrayVal a)))) i -> expr2smv $ a !! fromInteger i
     IndexExpr a i -> flip IdxExpr (ConstExpr $ ConstInteger i) $ expr2smv a
     Value v -> ConstExpr $ case v of
-        GTLIntVal i -> ConstInteger i
+        GTLIntVal i ->
+            ConstWord WordConstant {wcSigned = Just True, wcBits = Just 64, wcValue = toInteger i}
         GTLByteVal b -> 
             ConstWord WordConstant {wcSigned = Just False, wcBits = Just 8, wcValue = toInteger b}
         GTLBoolVal b -> ConstBool b

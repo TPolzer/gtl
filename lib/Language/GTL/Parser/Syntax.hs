@@ -14,7 +14,7 @@ data Declaration = Model ModelDecl -- ^ Declares a model.
                  | TypeAlias String UnResolvedType
                  deriving Show
 
-data ModelArgs = StrArg String | ConstantDecl String PExpr deriving Show
+data ModelArgs = StrArg String | ConstantDecl String PExpr deriving (Show, Eq)
 
 -- | Declares a synchronous model.
 data ModelDecl = ModelDecl

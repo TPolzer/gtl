@@ -3,6 +3,7 @@ module Language.GTL.Backend.NuSMV (NuSMV(..)) where
 
 import Control.Arrow
 import Control.Concurrent
+import Control.Monad.Error
 import Control.Monad.State
 import Control.Monad.Supply
 import Data.Fix
@@ -51,8 +52,9 @@ instance GTLBackend NuSMV where
     -- The gtl file is parsed a second time here, because we do not get type
     -- information for local/input/output variables from the caller.
     Right decls <- runGTLParser gtl <$> readFile (gtlFile opts)
-    let isMod (Model m) = modelName m == nuSMVName nuSMVData
+    let isMod (Model m) = modelArgs m !! 1 == StrArg (nuSMVName nuSMVData)
         isMod _ = False
+        --inputs have to be declared in the same order that is used in NuSMV!
         inputs = modelInputs $ (\(Model m) -> m) $ head $ filter isMod decls
         outputs = modelOutputs $ (\(Model m) -> m) $ head $ filter isMod decls
         locals = modelLocals $ (\(Model m) -> m) $ head $ filter isMod decls
@@ -64,6 +66,10 @@ instance GTLBackend NuSMV where
         enum2str (Fix (UnResolvedType' (Right (GTLEnum s)))) = s
         subtypes (Fix (UnResolvedType' (Right (GTLArray _ t)))) = subtypes t
         subtypes x = return x
+    when (length (filter isMod decls) /= 1) $ do
+        putStr "At the moment, each NuSMV module can only be used once "
+        putStrLn "per gtl file."
+        throwError undefined
 
     -- parse the implementation
     let file = nuSMVFileName nuSMVData
@@ -129,6 +135,7 @@ instance GTLBackend NuSMV where
             return $ if exitCode == ExitSuccess then Just valid else Nothing
     removeFile path
     return r
+    `catchError` const (return Nothing)
 
 type ModuleProd a = StateT [ModuleElement] (Supply Int) a
 

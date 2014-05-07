@@ -281,7 +281,7 @@ class BOp o where
 instance BOp BoolOp where
     opLlist = [(G.And,OpAnd),(G.Or,OpOr)]
 instance BOp Relation where
-    opLlist = [(BinLT,OpLT),(BinLTEq,OpLTE),(BinGT,OpGT),(BinGTEq,OpGTE),(BinEq,OpEq),(BinNEq,OpNeq),(BinAssign,error "assignment may not occur in this context")]
+    opLlist = [(BinLT,OpLT),(BinLTEq,OpLTE),(BinGT,OpGT),(BinGTEq,OpGTE),(BinEq,OpEq),(BinNEq,OpNeq),(BinAssign,error "assignment may not occur in contracts")]
 instance BOp IntOp where
     opLlist = [(G.OpPlus,N.OpPlus),(G.OpMinus,N.OpMinus),(G.OpMult,N.OpMult),(G.OpDiv,N.OpDiv)]
 instance BOp L.BinOp where

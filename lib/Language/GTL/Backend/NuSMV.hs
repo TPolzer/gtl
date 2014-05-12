@@ -1,7 +1,6 @@
 {-# LANGUAGE TypeFamilies, RankNTypes #-}
 module Language.GTL.Backend.NuSMV (NuSMV(..)) where
 
-import Control.Arrow
 import Control.Concurrent
 import Control.Monad.Error
 import Control.Monad.State
@@ -56,16 +55,6 @@ instance GTLBackend NuSMV where
         isMod _ = False
         --inputs have to be declared in the same order that is used in NuSMV!
         inputs = modelInputs $ (\(Model m) -> m) $ head $ filter isMod decls
-        outputs = modelOutputs $ (\(Model m) -> m) $ head $ filter isMod decls
-        locals = modelLocals $ (\(Model m) -> m) $ head $ filter isMod decls
-        vars = M.unions [inputs, outputs, locals]
-        enums = S.fromList $ map enum2str $ filter isEnum $ concatMap subtypes $ M.elems vars
-        isEnum :: UnResolvedType -> Bool
-        isEnum (Fix (UnResolvedType' (Right (GTLEnum _)))) = True
-        isEnum _ = False
-        enum2str (Fix (UnResolvedType' (Right (GTLEnum s)))) = s
-        subtypes (Fix (UnResolvedType' (Right (GTLArray _ t)))) = subtypes t
-        subtypes x = return x
     when (length (filter isMod decls) /= 1) $ do
         putStr "At the moment, each NuSMV module can only be used once "
         putStrLn "per gtl file."
@@ -137,8 +126,6 @@ instance GTLBackend NuSMV where
     return r
     `catchError` const (return Nothing)
 
-type ModuleProd a = StateT [ModuleElement] (Supply Int) a
-
 parseNuSMV :: ReadP (Bool,String)
 parseNuSMV = do
     let ctt = count 58 (P.char '#') >> P.char '\n'
@@ -175,11 +162,6 @@ getDeps m = moduleName m `S.insert` S.unions (map getVarDeps $ moduleBody m)
     getVarDeps _ = S.empty
     getTypeDeps (ModuleType s _) = S.singleton s
     getTypeDeps _ = S.empty
-
--- | 'ltlinit (s, v)' = LTLSpec s = v
-ltlinit :: (String, TypedExpr String) -> ModuleElement
-ltlinit (id, expr) = LTLSpec $ expr2smv $ Fix $ Typed (Fix GTLBool) $
-    BinRelExpr BinEq (Fix $ Typed (getType $ unfix expr) $ Var id 0 Input) expr
 
 type2smv :: UnResolvedType -> TypeSpecifier
 type2smv x = case unfix x of

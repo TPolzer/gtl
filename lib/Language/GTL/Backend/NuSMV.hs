@@ -222,8 +222,9 @@ dfa2smv dfa = do
 
 expr2smv :: TypedExpr String -> BasicExpr
 expr2smv expr = case getValue $ unfix expr of
-    Var name _ Input -> ConstExpr $ ConstId name
-    Var name _ _ -> IdExpr ComplexId {idBase = Nothing, idNavigation = [Left name]}
+    Var name 0 Input -> ConstExpr $ ConstId name
+    Var name 0 _ -> IdExpr ComplexId {idBase = Nothing, idNavigation = [Left name]}
+    Var _ _ _ -> error "Variable history not handled in NuSMV, it is broken in gtl anyway, do not use it!"
     BinBoolExpr op a b -> binExpr2smv op a b
     BinRelExpr op a b -> case getType $ unfix a of
         Fix (GTLArray l te) -> case op of

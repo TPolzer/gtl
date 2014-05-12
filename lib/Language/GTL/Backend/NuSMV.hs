@@ -92,15 +92,13 @@ instance GTLBackend NuSMV where
         (ltls,automata) = partition isLTL contracts
         nusmvContracts = concat $ flip evalSupply [0..] $ do
           let l = map ltl2smv ltls
-              -- map initial values to ltl constraints
-              i = map (ltlinit . second (constantToExpr enums . fromJust)) $ M.toList init
           dfas <- forM automata (\(LTLAutomaton a) -> do
             let dfa = case determinizeBA a of
                   Just d -> d
                   _ -> error "Automata contracts with non-final states are not allowed"
             dfa2smv $ renameDFAStates $ minimizeDFA dfa
             )
-          return (l:i:dfas)
+          return (l:dfas)
         implContracted = impl {moduleBody = moduleBody impl ++ nusmvContracts}
         (ids,types) = unzip $ M.toList inputs
         inids = map (\x -> "__in" ++ show x) [1..length ids]

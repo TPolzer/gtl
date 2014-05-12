@@ -133,7 +133,9 @@ instance GTLBackend NuSMV where
             unless valid $ putStrLn err
             exitCode <- waitForProcess pid
             return $ if exitCode == ExitSuccess then Just valid else Nothing
-    removeFile path
+    if "dump-nusmv" `S.member` debug opts then
+        renameFile path (gtlFile opts ++ "." ++ file ++ "." ++ component ++ ".smv") else
+        removeFile path
     return r
     `catchError` const (return Nothing)
 

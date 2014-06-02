@@ -60,7 +60,6 @@ tokens:-
   "{"                            { tok $ Bracket Curly False }
   "}"                            { tok $ Bracket Curly True }
   ";"                            { tok Semicolon }
-  ":="                           { bin GOpAssign }
   ":"                            { tok Colon }
   "."                            { tok Dot }
   ","                            { tok Comma }

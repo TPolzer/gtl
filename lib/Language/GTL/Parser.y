@@ -208,7 +208,6 @@ expr : pexpr "and" pexpr                 { GBin GOpAnd NoTime $1 $3 }
      | pexpr ">" pexpr                   { GBin GOpGreaterThan NoTime $1 $3 }
      | pexpr ">=" pexpr                  { GBin GOpGreaterThanEqual NoTime $1 $3 }
      | pexpr "=" pexpr                   { GBin GOpEqual NoTime $1 $3 }
-     | pexpr ":=" pexpr                  { GBin GOpEqual NoTime (fst $1,GContext ContextOut $1) (fst $3,GContext ContextIn $3) }
      | pexpr "!=" pexpr                  { GBin GOpNEqual NoTime $1 $3 }
      | "after" time_spec pexpr          { GUn GOpAfter $2 $3 }
      | "not" pexpr                      { GUn GOpNot NoTime $2 }

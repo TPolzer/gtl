@@ -14,6 +14,7 @@ import Language.GTL.Buchi
 import Data.AtomContainer
 import Data.List (sortBy)
 import Data.Function (on)
+import Language.GTL.Expression
 
 -- Models total functions via mapping structures. The instances may not really be total,
 -- this has to be ensured by the user (how should that be checked?).
@@ -72,7 +73,7 @@ mergeInits ba =
 
 -- | Tries to determinize a given B&#xFC;chi automaton. Only possible if all states are final.
 -- If not possible it returns Nothing.
-determinizeBA :: forall a st el. (Eq a, Ord a, Eq st, Ord st,AtomContainer a el,Show a,Show st) => BA a st -> Maybe (DFA a (PowSetSt st))
+determinizeBA :: forall st el v. (Eq st, Ord st, Show st, Show v, Ord v) => BA [TypedExpr v] st -> Maybe (DFA [TypedExpr v] (PowSetSt st))
 determinizeBA ba
   | (Set.size $ baFinals ba) /= (Map.size $ baTransitions ba) = Nothing
   | otherwise =
@@ -83,7 +84,7 @@ determinizeBA ba
           dfaInit = initS
         }
       where
-        determinize' :: (Map st (Set (a, st))) -> Set (PowSetSt st) -> [PowSetSt st] -> Map (PowSetSt st)	 [(a, PowSetSt st)] -> Map (PowSetSt st) [(a, PowSetSt st)]
+--        determinize' :: (Map st (Set (a, st))) -> Set (PowSetSt st) -> [PowSetSt st] -> Map (PowSetSt st)	 [(a, PowSetSt st)] -> Map (PowSetSt st) [(a, PowSetSt st)]
         determinize' _ _ [] trans = trans
         determinize' ba visited (next:remaining) trans
           | Set.member next visited = determinize' ba visited remaining trans
@@ -94,10 +95,11 @@ determinizeBA ba
               newStates = fmap snd trans'
               remaining' = newStates `seq` (newStates ++ remaining)
               base = Set.unions [ba Map.! k | k <- Set.toList next]
-              getTransitions :: (AtomContainer a el, Ord st) => [(a,st)] -> [a] -> Set st -> [(a,PowSetSt st)]
+--              getTransitions :: (AtomContainer a el, Ord st) => [(a,st)] -> [a] -> Set st -> [(a,PowSetSt st)]
               getTransitions [] cond reachable
                 | Set.null reachable = []
-                | otherwise = [(c,reachable) | c <- cond]
+                | Prelude.null cond = []
+                | otherwise = [([gany $ fmap gall cond],reachable)]--[(c,reachable) | c <- cond]
               getTransitions ((c,s):xs) cond reachable
                 | otherwise = getTransitions xs (catMaybes $ fmap (mergeAtoms c) cond) (Set.insert s reachable)
                   ++ concat [getTransitions xs (catMaybes $ fmap (mergeAtoms notC) cond) reachable |

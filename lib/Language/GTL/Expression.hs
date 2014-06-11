@@ -24,6 +24,8 @@ module Language.GTL.Expression
         gor,
         geq,
         gneq,
+        gall,
+        gany,
         galways,
         gfinally,
         gimplies,
@@ -224,40 +226,48 @@ constant x = Fix $ Typed (gtlTypeOf x) (Value (toGTL x))
 -- | Negate a given expression
 gnot :: TypedExpr v -> TypedExpr v
 gnot expr
-  | getType (unfix expr) == gtlBool = Fix $ Typed gtlBool (UnBoolExpr Not expr)
+  | baseType (getType (unfix expr)) == gtlBool = Fix $ Typed gtlBool (UnBoolExpr Not expr)
 
 -- | Create the logical conjunction of two expressions
 gand :: TypedExpr v -> TypedExpr v -> TypedExpr v
 gand x y
-  | getType (unfix x) == gtlBool && getType (unfix y) == gtlBool = Fix $ Typed gtlBool (BinBoolExpr And x y)
+  | baseType (getType (unfix x)) == gtlBool && baseType (getType (unfix y)) == gtlBool = Fix $ Typed gtlBool (BinBoolExpr And x y)
 
 -- | Create the logical disjunction of two expressions
 gor :: TypedExpr v -> TypedExpr v -> TypedExpr v
 gor x y
-  | getType (unfix x) == gtlBool && getType (unfix y) == gtlBool = Fix $ Typed gtlBool (BinBoolExpr Or x y)
+  | baseType (getType (unfix x)) == gtlBool && baseType (getType (unfix y)) == gtlBool = Fix $ Typed gtlBool (BinBoolExpr Or x y)
 
 -- | Create an equality relation between two expressions
 geq :: TypedExpr v -> TypedExpr v -> TypedExpr v
 geq x y
-  | baseType (getType (unfix x)) == baseType (getType (unfix y)) = Fix $ Typed gtlBool (BinRelExpr BinEq x y)
-  | otherwise = error $ "Language.GTL.Expression.geq: Type mismatch between "++show (getType (unfix x))++" and "++show (getType (unfix y))
+  | baseType (baseType (getType (unfix x))) == baseType (baseType (getType (unfix y))) = Fix $ Typed gtlBool (BinRelExpr BinEq x y)
+  | otherwise = error $ "Language.GTL.Expression.geq: Type mismatch between "++show (baseType (getType (unfix x)))++" and "++show (baseType (getType (unfix y)))
 
 -- | Create an unequality relation between two expressions
 gneq :: TypedExpr v -> TypedExpr v -> TypedExpr v
 gneq x y
-  | getType (unfix x) == getType (unfix y) = Fix $ Typed gtlBool (BinRelExpr BinNEq x y)
+  | baseType (getType (unfix x)) == baseType (getType (unfix y)) = Fix $ Typed gtlBool (BinRelExpr BinNEq x y)
 
 galways :: TypedExpr v -> TypedExpr v
 galways x
-  | getType (unfix x) == gtlBool = Fix $ Typed gtlBool (UnBoolExpr Always x)
+  | baseType (getType (unfix x)) == gtlBool = Fix $ Typed gtlBool (UnBoolExpr Always x)
 
 gfinally :: TypedExpr v -> TypedExpr v
 gfinally x
-  | getType (unfix x) == gtlBool = Fix $ Typed gtlBool (UnBoolExpr (Finally NoTime) x)
+  | baseType (getType (unfix x)) == gtlBool = Fix $ Typed gtlBool (UnBoolExpr (Finally NoTime) x)
 
 gimplies :: TypedExpr v -> TypedExpr v -> TypedExpr v
 gimplies x y
-  | getType (unfix x) == gtlBool && getType (unfix y) == gtlBool = Fix $ Typed gtlBool (BinBoolExpr Implies x y)
+  | baseType (getType (unfix x)) == gtlBool && baseType (getType (unfix y)) == gtlBool = Fix $ Typed gtlBool (BinBoolExpr Implies x y)
+
+gall :: [TypedExpr v] -> TypedExpr v
+gall [] = constant True
+gall l = foldl1 gand l
+
+gany :: [TypedExpr v] -> TypedExpr v
+gany [] = constant False
+gany l = foldl1 gor l
 
 -- | Create a enumeration value for a given enumeration type
 enumConst :: [String] -> String -> TypedExpr v
@@ -642,7 +652,7 @@ parseTerm f ex inf e = liftM Fix $ parseTerm' (\ex' inf' expr -> parseTerm f ex'
 -- | Distribute a negation as deep as possible into an expression until it only ever occurs in front of variables.
 distributeNot :: TypedExpr v -> TypedExpr v
 distributeNot expr
-  | getType (unfix expr) == gtlBool = case getValue (unfix expr) of
+  | baseType (getType (unfix expr)) == gtlBool = case getValue (unfix expr) of
     Var x lvl u -> Fix $ Typed gtlBool $ UnBoolExpr Not expr
     Value (GTLBoolVal x) -> Fix $ Typed gtlBool $ Value (GTLBoolVal (not x))
     BinBoolExpr op l r -> Fix $ Typed gtlBool $ case op of
@@ -662,11 +672,12 @@ distributeNot expr
     Automaton _ _ -> Fix $ Typed gtlBool $ UnBoolExpr Not expr
     ClockRef x -> Fix $ Typed gtlBool $ UnBoolExpr Not expr
     ClockReset _ _ -> error "Can't negate a clock reset"
+  | True = error $ "distributeNot was applied to the wrong type: " ++ (show $ getType $ unfix expr)
 
 -- | If negations occur in the given expression, push them as deep into the expression as possible.
 pushNot :: TypedExpr v -> TypedExpr v
 pushNot expr
-  | getType (unfix expr) == gtlBool = case getValue (unfix expr) of
+  | baseType (getType (unfix expr)) == gtlBool = case getValue (unfix expr) of
     BinBoolExpr op l r -> Fix $ Typed gtlBool $ BinBoolExpr op (pushNot l) (pushNot r)
     UnBoolExpr Not p -> distributeNot p
     UnBoolExpr op p -> Fix $ Typed gtlBool $ UnBoolExpr op (pushNot p)
@@ -923,7 +934,7 @@ toLinearExpr e = case getValue (unfix e) of
          OpMinus -> Map.unionWith (constantOp (-)) p1 p2
          OpMult -> Map.fromList [ (Map.unionWith (+) t1 t2,constantOp (*) c1 c2) | (t1,c1) <- Map.toList p1, (t2,c2) <- Map.toList p2 ]
   where
-    one = Fix $ case unfix $ getType (unfix e) of
+    one = Fix $ case unfix $ baseType (getType (unfix e)) of
       GTLInt -> GTLIntVal 1
       GTLByte -> GTLByteVal 1
       GTLFloat -> GTLFloatVal 1
@@ -1047,6 +1058,7 @@ compareExpr e1 e2
           ClockRef x -> case getValue (unfix e2) of
             ClockRef y -> if x==y then EEQ else EUNK
             _ -> EUNK
+          _ -> EUNK
       _ -> case getValue (unfix e1) of
         Value c1 -> case getValue (unfix e2) of
           Value c2 -> if c1 == c2
@@ -1139,7 +1151,7 @@ constantToExpr enums c = case unfix c of
   GTLEnumVal v -> case find (elem v) enums of 
     Just enum -> Fix $ Typed (gtlEnum enum) (Value (GTLEnumVal v))
   GTLArrayVal vs -> let e:es = fmap (constantToExpr enums) vs
-                        tp = getType (unfix e)
+                        tp = baseType (getType (unfix e))
                     in Fix $ Typed (gtlArray (genericLength vs) tp) (Value (GTLArrayVal (e:es)))
   GTLTupleVal vs -> let es = fmap (constantToExpr enums) vs
                         tps = fmap (getType.unfix) es
@@ -1192,4 +1204,4 @@ instance (Ord v,Show v) => AtomContainer [TypedExpr v] (TypedExpr v) where
           Nothing -> Nothing
           Just ys' -> Just (y:ys')
         ENEQ -> Nothing
-  negateAtoms = fmap (return . distributeNot)
+  negateAtoms = return . return . gany . fmap distributeNot
